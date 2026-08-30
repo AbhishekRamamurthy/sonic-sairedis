@@ -335,6 +335,32 @@ void SaiSwitch::helperCheckLaneMap()
         redisLaneMap = laneMap; // copy
     }
 
+    if (laneMap.size() == 0 && redisLaneMap.size() != 0)
+    {
+        /*
+         * The SDK returned zero lanes even though Redis still holds the lane
+         * map from a previous boot.  This is the mirror of the case above.
+         *
+         * It occurs when the ASIC was hard-reset by the SDK watchdog (Fatal
+         * health-check failure) and has not finished re-initializing by the
+         * time helperCheckLaneMap runs.  Throwing here is fatal and causes
+         * syncd to crash-loop with no possibility of recovery.
+         *
+         * Safe recovery: clear the stale Redis lane map so that the next
+         * clean syncd start treats this as a first-time cold boot and
+         * repopulates the map from the hardware -- identical to what the
+         * redisLaneMap.size()==0 branch above does in the opposite direction.
+         */
+        SWSS_LOG_WARN("hardware returned 0 lanes but redis has %zu; "
+                      "ASIC may not be fully initialized after watchdog reset. "
+                      "Clearing stale redis lane map.",
+                      redisLaneMap.size());
+
+        m_client->saveLaneMap(m_switch_vid, laneMap); // save empty, forces re-population on next clean start
+
+        return;
+    }
+
     if (laneMap.size() != redisLaneMap.size())
     {
         SWSS_LOG_THROW("lanes map size differ: %lu vs %lu", laneMap.size(), redisLaneMap.size());
