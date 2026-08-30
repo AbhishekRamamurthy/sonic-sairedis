@@ -116,6 +116,8 @@ namespace syncd
 
             virtual std::vector<std::string> getAsicStateSwitchesKeys() const override;
 
+            virtual AsicStateSnapshot getAsicStateAtomicSnapshot() const override;
+
             virtual void removeColdVid(
                     _In_ sai_object_id_t vid) override;
 

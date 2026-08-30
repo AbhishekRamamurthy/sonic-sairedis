@@ -686,6 +686,113 @@ std::vector<std::string> RedisClient::getAsicStateKeys() const
     return m_dbAsic->keys(ASIC_STATE_TABLE ":*");
 }
 
+BaseRedisClient::AsicStateSnapshot RedisClient::getAsicStateAtomicSnapshot() const
+{
+    SWSS_LOG_ENTER();
+
+    SWSS_LOG_TIMER("atomic ASIC_DB snapshot (MULTI/EXEC)");
+
+    /*
+     * Issue MULTI/EXEC so that VIDTORID, RIDTOVID and ASIC_STATE keys are
+     * read as a single atomic unit.  No swss flush can interleave between the
+     * three reads, preventing the partially-stale snapshot that would cause
+     * hardReinit() to crash with std::out_of_range or to reinitialize the
+     * ASIC from inconsistent data.
+     *
+     * Redis MULTI guarantees that the queued commands execute sequentially
+     * with no other client commands interleaved.  EXEC returns an array whose
+     * elements correspond 1-to-1 with the queued commands.
+     */
+
+    swss::RedisCommand cmdMulti;
+    cmdMulti.format("MULTI");
+    swss::RedisReply rMulti(m_dbAsic.get(), cmdMulti, REDIS_REPLY_STATUS);
+    rMulti.checkStatusOK();
+
+    swss::RedisCommand cmdV2R;
+    cmdV2R.format("HGETALL %s", VIDTORID);
+    swss::RedisReply rV2R(m_dbAsic.get(), cmdV2R, REDIS_REPLY_STATUS);
+    rV2R.checkStatusQueued();
+
+    swss::RedisCommand cmdR2V;
+    cmdR2V.format("HGETALL %s", RIDTOVID);
+    swss::RedisReply rR2V(m_dbAsic.get(), cmdR2V, REDIS_REPLY_STATUS);
+    rR2V.checkStatusQueued();
+
+    swss::RedisCommand cmdKeys;
+    cmdKeys.format("KEYS %s:*", ASIC_STATE_TABLE);
+    swss::RedisReply rKeys(m_dbAsic.get(), cmdKeys, REDIS_REPLY_STATUS);
+    rKeys.checkStatusQueued();
+
+    swss::RedisCommand cmdExec;
+    cmdExec.format("EXEC");
+    swss::RedisReply rExec(m_dbAsic.get(), cmdExec, REDIS_REPLY_ARRAY);
+
+    AsicStateSnapshot snap;
+
+    if (rExec.getChildCount() != 3)
+    {
+        SWSS_LOG_THROW("EXEC returned %zu elements, expected 3", rExec.getChildCount());
+    }
+
+    /*
+     * Element 0: HGETALL VIDTORID
+     * Redis HGETALL returns a flat array: [field0, value0, field1, value1, ...]
+     * For VIDTORID: field = VID string, value = RID string.
+     */
+    redisReply *r0 = rExec.getChild(0);
+
+    if (r0 != nullptr && r0->type == REDIS_REPLY_ARRAY)
+    {
+        for (size_t i = 0; i + 1 < r0->elements; i += 2)
+        {
+            sai_object_id_t vid, rid;
+            sai_deserialize_object_id(r0->element[i]->str,     vid);
+            sai_deserialize_object_id(r0->element[i + 1]->str, rid);
+            snap.vidToRid[vid] = rid;
+        }
+    }
+
+    /*
+     * Element 1: HGETALL RIDTOVID
+     * For RIDTOVID: field = RID string, value = VID string.
+     */
+    redisReply *r1 = rExec.getChild(1);
+
+    if (r1 != nullptr && r1->type == REDIS_REPLY_ARRAY)
+    {
+        for (size_t i = 0; i + 1 < r1->elements; i += 2)
+        {
+            sai_object_id_t rid, vid;
+            sai_deserialize_object_id(r1->element[i]->str,     rid);
+            sai_deserialize_object_id(r1->element[i + 1]->str, vid);
+            snap.ridToVid[rid] = vid;
+        }
+    }
+
+    /*
+     * Element 2: KEYS ASIC_STATE:*
+     * Returns an array of matching key strings.
+     */
+    redisReply *r2 = rExec.getChild(2);
+
+    if (r2 != nullptr && r2->type == REDIS_REPLY_ARRAY)
+    {
+        for (size_t i = 0; i < r2->elements; i++)
+        {
+            if (r2->element[i] != nullptr && r2->element[i]->str != nullptr)
+            {
+                snap.asicStateKeys.push_back(r2->element[i]->str);
+            }
+        }
+    }
+
+    SWSS_LOG_NOTICE("atomic snapshot: %zu VID/RID entries, %zu ASIC_STATE keys",
+            snap.vidToRid.size(), snap.asicStateKeys.size());
+
+    return snap;
+}
+
 std::vector<std::string> RedisClient::getAsicStateSwitchesKeys() const
 {
     SWSS_LOG_ENTER();

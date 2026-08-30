@@ -208,6 +208,19 @@ std::vector<std::string> DisabledRedisClient::getAsicStateSwitchesKeys() const
     return {};
 }
 
+BaseRedisClient::AsicStateSnapshot DisabledRedisClient::getAsicStateAtomicSnapshot() const
+{
+    SWSS_LOG_ENTER();
+
+    /*
+     * ZMQ / no-ASIC_DB mode: there is no Redis backend and therefore no
+     * concurrent swss flush to race against.  Return an empty snapshot;
+     * hardReinit() will skip reinit and wait for orchagent, which is the
+     * correct behavior for this mode.
+     */
+    return AsicStateSnapshot{};
+}
+
 void DisabledRedisClient::removeColdVid(
         _In_ sai_object_id_t vid)
 {

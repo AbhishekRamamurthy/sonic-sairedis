@@ -116,6 +116,25 @@ namespace syncd
 
             virtual std::vector<std::string> getAsicStateSwitchesKeys() const = 0;
 
+            /**
+             * @brief Atomically snapshot VIDTORID, RIDTOVID and ASIC_STATE keys.
+             *
+             * Uses a Redis MULTI/EXEC transaction so that no concurrent writer
+             * (e.g. swss flushing ASIC_DB during container restart) can modify
+             * any of the three data structures between the individual reads.
+             *
+             * Implementations that do not have a real Redis backend (e.g.
+             * DisabledRedisClient for ZMQ mode) may fall back to sequential reads.
+             */
+            struct AsicStateSnapshot
+            {
+                std::unordered_map<sai_object_id_t, sai_object_id_t> vidToRid;
+                std::unordered_map<sai_object_id_t, sai_object_id_t> ridToVid;
+                std::vector<std::string> asicStateKeys;
+            };
+
+            virtual AsicStateSnapshot getAsicStateAtomicSnapshot() const = 0;
+
             virtual void removeColdVid(
                     _In_ sai_object_id_t vid) = 0;
 
