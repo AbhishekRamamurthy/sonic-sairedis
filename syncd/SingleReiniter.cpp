@@ -313,6 +313,32 @@ void SingleReiniter::processSwitches()
         m_translatedR2V[m_switch_rid] = m_switch_vid;
 
         /*
+         * Register the new switch RID→VID in the shared translator
+         * immediately, before constructing SaiSwitch.
+         *
+         * SaiSwitch's constructor calls helperSaveDiscoveredObjectsToRedis(),
+         * which iterates over every discovered RID -- including the switch's
+         * own RID -- and calls translateRidToVid() on each one.  The
+         * translator first probes its in-memory map and then falls back to
+         * Redis.  At this point in time:
+         *
+         *   - The in-memory map still holds the *old* RID→VID entry that was
+         *     loaded from Redis at startup; the new RID assigned by the SDK
+         *     after the ASIC reset is not yet present.
+         *   - Redis (ASIC_DB) may already have been flushed by a concurrently
+         *     restarting swss, so the Redis fallback also returns nothing.
+         *
+         * Without this registration the translator hits the switch-type guard
+         * in VirtualOidTranslator::translateRidToVid() and throws:
+         *   "RID 0x... is switch object, but not in local or redis db, bug!"
+         *
+         * onSwitchCreateInInitViewMode() (Syncd.cpp) already performs this
+         * same call immediately after vendorSai->create() for the init-view
+         * path.  The hard-reinit path was missing the equivalent step.
+         */
+        m_translator->insertRidAndVid(m_switch_rid, m_switch_vid);
+
+        /*
          * SaiSwitch class object must be created before before any other
          * object, so when doing discover we will get full default ASIC view.
          */
