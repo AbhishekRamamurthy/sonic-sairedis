@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <set>
+#include <string>
 #include <vector>
 
 using namespace syncd;
@@ -304,4 +305,158 @@ TEST(AsicViewIdentityIndex, getNhgMemberIndex_GroupsInterchangeableNhgs)
     const auto &pool = index->begin()->second;
 
     EXPECT_EQ(pool.size(), 2u);
+}
+
+TEST(AsicViewIdentityIndex, computeCreateOnlyKey_SkipsCreateAndSetInFilter)
+{
+    AsicView currentView;
+
+    const auto nhIds = deserializePair("oid:0x4000000000a01", "oid:0x4000000000f001");
+
+    auto nh = addOidObject(currentView, nhIds, {
+        {"SAI_NEXT_HOP_ATTR_TYPE", "SAI_NEXT_HOP_TYPE_IP"},
+        {"SAI_NEXT_HOP_ATTR_IP", "10.0.0.90"},
+        {"SAI_NEXT_HOP_ATTR_TUNNEL_VNI", "10100"},
+    });
+
+    std::set<sai_attr_id_t> filter = {
+        SAI_NEXT_HOP_ATTR_TYPE,
+        SAI_NEXT_HOP_ATTR_IP,
+        SAI_NEXT_HOP_ATTR_TUNNEL_VNI,
+    };
+
+    const std::string key = AsicView::computeCreateOnlyKey(nh, currentView.m_vidToRid, &filter);
+
+    EXPECT_NE(key.find("SAI_NEXT_HOP_ATTR_TYPE"), std::string::npos);
+    EXPECT_NE(key.find("SAI_NEXT_HOP_ATTR_IP"), std::string::npos);
+    EXPECT_EQ(key.find("SAI_NEXT_HOP_ATTR_TUNNEL_VNI"), std::string::npos);
+}
+
+TEST(AsicViewIdentityIndex, computeCreateOnlyKey_SerializesNullOid)
+{
+    AsicView currentView;
+
+    const auto nhg = deserializePair("oid:0x5000000003a01", "oid:0x5000000000f010");
+    const auto nhgm = deserializePair("oid:0x2d000000003a01", "oid:0x2d0000000000f010");
+
+    addOidObject(currentView, nhg, {
+        {"SAI_NEXT_HOP_GROUP_ATTR_TYPE", "SAI_NEXT_HOP_GROUP_TYPE_DYNAMIC_UNORDERED_ECMP"},
+    });
+
+    auto member = addOidObject(currentView, nhgm, {
+        {"SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_GROUP_ID", "oid:0x5000000003a01"},
+        {"SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_ID", "oid:0x0"},
+    });
+
+    const std::set<sai_attr_id_t> filter = attrFilterFromObject(member);
+    const std::string key = AsicView::computeCreateOnlyKey(member, currentView.m_vidToRid, &filter);
+
+    EXPECT_FALSE(key.empty());
+    EXPECT_NE(key.find(sai_serialize_object_id(SAI_NULL_OBJECT_ID)), std::string::npos);
+}
+
+TEST(AsicViewIdentityIndex, computeNhgMemberKey_MissingNextHopId)
+{
+    AsicView view;
+
+    const auto nhg = deserializePair("oid:0x5000000003a10", "oid:0x5000000000f020");
+
+    addOidObject(view, nhg, {
+        {"SAI_NEXT_HOP_GROUP_ATTR_TYPE", "SAI_NEXT_HOP_GROUP_TYPE_DYNAMIC_UNORDERED_ECMP"},
+    });
+
+    addOidObject(view, deserializePair("oid:0x2d000000003a10", "oid:0x2d0000000000f020"), {
+        {"SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_GROUP_ID", "oid:0x5000000003a10"},
+    });
+
+    EXPECT_TRUE(view.computeNhgMemberKey(nhg.vid, view.m_vidToRid).empty());
+}
+
+TEST(AsicViewIdentityIndex, computeNhgMemberKey_UnresolvedNextHopVid)
+{
+    AsicView view;
+
+    const auto nhg = deserializePair("oid:0x5000000003a20", "oid:0x5000000000f030");
+
+    addOidObject(view, nhg, {
+        {"SAI_NEXT_HOP_GROUP_ATTR_TYPE", "SAI_NEXT_HOP_GROUP_TYPE_DYNAMIC_UNORDERED_ECMP"},
+    });
+
+    addOidObject(view, deserializePair("oid:0x2d000000003a20", "oid:0x2d0000000000f030"), {
+        {"SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_GROUP_ID", "oid:0x5000000003a20"},
+        {"SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_ID", "oid:0x4000000000a20"},
+    });
+
+    EXPECT_TRUE(view.computeNhgMemberKey(nhg.vid, view.m_vidToRid).empty());
+}
+
+TEST(AsicViewIdentityIndex, computeNhgMemberKey_EmptyMembers)
+{
+    AsicView view;
+
+    const auto nhg = deserializePair("oid:0x5000000003a30", "oid:0x5000000000f040");
+
+    addOidObject(view, nhg, {
+        {"SAI_NEXT_HOP_GROUP_ATTR_TYPE", "SAI_NEXT_HOP_GROUP_TYPE_DYNAMIC_UNORDERED_ECMP"},
+    });
+
+    EXPECT_TRUE(view.computeNhgMemberKey(nhg.vid, view.m_vidToRid).empty());
+}
+
+TEST(AsicViewIdentityIndex, getCreateOnlyIndex_SkipsEmptyKey)
+{
+    AsicView currentView;
+
+    const auto tunnelNh = deserializePair("oid:0x4000000000a30", "oid:0x4000000000f050");
+    const auto ipNh = deserializePair("oid:0x4000000000a31", "oid:0x4000000000f051");
+
+    auto tunnelObj = addOidObject(currentView, tunnelNh, {
+        {"SAI_NEXT_HOP_ATTR_TYPE", "SAI_NEXT_HOP_TYPE_TUNNEL_ENCAP"},
+        {"SAI_NEXT_HOP_ATTR_IP", "10.200.210.1"},
+        {"SAI_NEXT_HOP_ATTR_TUNNEL_ID", "oid:0x1a0000000000ef"},
+    });
+
+    addOidObject(currentView, ipNh, {
+        {"SAI_NEXT_HOP_ATTR_TYPE", "SAI_NEXT_HOP_TYPE_IP"},
+        {"SAI_NEXT_HOP_ATTR_IP", "10.0.0.91"},
+    });
+
+    const std::set<sai_attr_id_t> filter = attrFilterFromObject(tunnelObj);
+    const auto *index = currentView.getCreateOnlyIndex(SAI_OBJECT_TYPE_NEXT_HOP, filter);
+
+    ASSERT_NE(index, nullptr);
+    EXPECT_EQ(index->size(), 1u);
+}
+
+TEST(AsicViewIdentityIndex, getNhgMemberIndex_SkipsEmptyKey)
+{
+    AsicView view;
+
+    const auto emptyNhg = deserializePair("oid:0x5000000003a40", "oid:0x5000000000f060");
+    const auto validNhg = deserializePair("oid:0x5000000003a41", "oid:0x5000000000f061");
+    const auto nh = deserializePair("oid:0x4000000000a40", "oid:0x4000000000f070");
+
+    addOidObject(view, emptyNhg, {
+        {"SAI_NEXT_HOP_GROUP_ATTR_TYPE", "SAI_NEXT_HOP_GROUP_TYPE_DYNAMIC_UNORDERED_ECMP"},
+    });
+
+    addOidObject(view, validNhg, {
+        {"SAI_NEXT_HOP_GROUP_ATTR_TYPE", "SAI_NEXT_HOP_GROUP_TYPE_DYNAMIC_UNORDERED_ECMP"},
+    });
+
+    addOidObject(view, nh, {});
+
+    addOidObject(view, deserializePair("oid:0x2d000000003a40", "oid:0x2d0000000000f060"), {
+        {"SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_GROUP_ID", "oid:0x5000000003a40"},
+    });
+
+    addOidObject(view, deserializePair("oid:0x2d000000003a41", "oid:0x2d0000000000f061"), {
+        {"SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_GROUP_ID", "oid:0x5000000003a41"},
+        {"SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_ID", "oid:0x4000000000a40"},
+    });
+
+    const auto *index = view.getNhgMemberIndex();
+
+    ASSERT_NE(index, nullptr);
+    EXPECT_EQ(index->size(), 1u);
 }
